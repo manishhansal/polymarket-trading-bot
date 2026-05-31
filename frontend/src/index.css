@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(circle at 15% -10%, rgba(63, 185, 80, 0.06), transparent 50%),
+    radial-gradient(circle at 90% 10%, rgba(88, 166, 255, 0.05), transparent 55%),
+    #0d1117;
+}
+
+/* Subtle terminal scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: #3fb950; }
+
+@layer components {
+  .panel {
+    @apply bg-bg-panel border border-border-subtle rounded-lg overflow-hidden;
+  }
+  .panel-header {
+    @apply px-4 py-2.5 border-b border-border-subtle flex items-center justify-between text-xs uppercase tracking-wider text-term-gray;
+  }
+  .panel-body {
+    @apply p-4;
+  }
+  .pill {
+    @apply px-2 py-0.5 rounded text-[10px] uppercase tracking-wider font-semibold;
+  }
+  .btn {
+    @apply px-3 py-1.5 rounded text-xs font-semibold uppercase tracking-wider transition-colors border;
+  }
+  .btn-primary {
+    @apply btn bg-term-green/10 text-term-green border-term-green/40 hover:bg-term-green/20;
+  }
+  .btn-danger {
+    @apply btn bg-term-red/10 text-term-red border-term-red/40 hover:bg-term-red/20;
+  }
+  .btn-ghost {
+    @apply btn bg-transparent text-term-gray border-border hover:bg-bg-hover;
+  }
+  .stat-label {
+    @apply text-[10px] uppercase tracking-widest text-term-gray;
+  }
+  .stat-value {
+    @apply font-mono text-lg text-white;
+  }
+}
