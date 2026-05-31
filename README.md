@@ -6,15 +6,17 @@
 ![fastapi](https://img.shields.io/badge/fastapi-0.115-009688?logo=fastapi&logoColor=white)
 ![react](https://img.shields.io/badge/react-18-61DAFB?logo=react&logoColor=black)
 ![tailwind](https://img.shields.io/badge/tailwind-3.4-06B6D4?logo=tailwindcss&logoColor=white)
-![tests](https://img.shields.io/badge/tests-32%20passing-3fb950)
-![mode](https://img.shields.io/badge/default-paper%20trading-d29922)
+![tests](https://img.shields.io/badge/tests-59%20passing-3fb950)
+![mode](https://img.shields.io/badge/default-auto%20%28paper%20when%20unfunded%29-d29922)
 ![license](https://img.shields.io/badge/license-MIT-blue)
+
+> **Repository:** [github.com/manishhansal/polymarket-trading-bot](https://github.com/manishhansal/polymarket-trading-bot)
 
 A full-stack, production-ready trading bot:
 - **Python 3.11 + FastAPI** backend with APScheduler running on a 60-second cron
 - **React 18 + Recharts + Tailwind** dashboard in a dark terminal aesthetic
 - **WebSocket** push for sub-5-second UI updates
-- **Paper mode** by default (zero risk) → flip to **live mode** via dashboard toggle
+- **Auto mode** by default — paper-trades when the wallet is empty, automatically goes live the moment you fund it
 - **Kelly Criterion** position sizing + 4-stage compounding strategy + drawdown circuit breaker
 - **SQLite** dev DB with a PostgreSQL-compatible schema
 
@@ -25,13 +27,14 @@ A full-stack, production-ready trading bot:
 ## TL;DR
 
 ```bash
-git clone <this-repo> && cd polymarket-trading-bot
+git clone https://github.com/manishhansal/polymarket-trading-bot.git
+cd polymarket-trading-bot
 cp .env.example .env
 docker compose up --build
 open http://localhost:5173
 ```
 
-That's it. The bot is now running in **PAPER mode** with a $5.00 simulated bankroll — no wallet, no API keys, no risk. Watch it hunt for mispriced markets every 60 seconds.
+That's it. The bot is now running in **AUTO mode** with a $5.00 simulated bankroll. Without a funded wallet it stays paper — no API keys, no risk. Watch it hunt for mispriced markets every 60 seconds. Fund the wallet in `.env` with ≥ $5 of pUSD and the next trade automatically becomes real.
 
 | | |
 |---|---|
@@ -52,7 +55,7 @@ docker compose up --build
 - Backend → http://localhost:8000  ·  API docs at `/docs`
 - Dashboard → http://localhost:5173
 
-The bot launches in **PAPER mode** with a $5.00 simulated bankroll. No wallet, no API keys, no risk.
+The bot launches in **AUTO mode** with a $5.00 simulated bankroll. Without API keys or a funded wallet it stays paper — zero risk, real Polymarket data.
 
 ---
 
@@ -114,10 +117,10 @@ Open http://localhost:5173.
 │  └──────────────┘  └──────────────┘  └────────┬─────────┘  │
 │         ▲                                      │            │
 │         │                                      ▼            │
-│  ┌──────┴───────┐                     ┌────────────────┐    │
-│  │ scheduler.py │                     │  executor.py   │    │
-│  │ (APScheduler)│                     │ paper or live  │    │
-│  └──────────────┘                     └────────┬───────┘    │
+│  ┌──────┴───────┐  ┌──────────────┐   ┌────────────────┐   │
+│  │ scheduler.py │  │  wallet.py   │──▶│  executor.py   │   │
+│  │ (APScheduler)│  │ (Polygon RO) │   │ paper or live  │   │
+│  └──────────────┘  └──────────────┘   └────────┬───────┘   │
 │         ▲                                      │            │
 │         │                                      ▼            │
 │  ┌──────┴────────────────────────────────────────────────┐  │
@@ -125,7 +128,7 @@ Open http://localhost:5173.
 │  └────────────────────────────────────────────────────────┘  │
 └──────────────────────────┬─────────────────────────────────┘
                            ▼
-              Polymarket CLOB · Polygon · Metaculus · Kalshi
+              Polymarket CLOB V2 · Polygon (pUSD) · Metaculus · Kalshi
 ```
 
 ---
@@ -398,19 +401,21 @@ The dashboard is built for a developer's eye — dark `#0d1117` background, JetB
 
 ```bash
 pytest -q
-# 32 passed in 5.55s
+# 59 passed in 11.71s
 ```
 
 Tests live in `backend/tests/`:
 
-| File                  | Tests | Covers                                                                  |
-|-----------------------|-------|-------------------------------------------------------------------------|
-| `test_kelly.py`       | 14    | Kelly formula correctness, drawdown math, stage gating, position caps   |
-| `test_edge_calc.py`   | 8     | Tokenization, geometric oracle blending, side-flipping, heuristic path  |
-| `test_executor.py`    | 6     | Paper fill → position → mark-to-market → close → realized PnL           |
-| _meta_                | 4     | Pytest discovery + the `_reset_settings` autouse fixture                |
+| File                       | Tests | Covers                                                                                 |
+|----------------------------|-------|----------------------------------------------------------------------------------------|
+| `test_kelly.py`            | 18    | Kelly formula correctness, drawdown math, stage gating, position caps, min-bet floor    |
+| `test_auto_mode.py`        | 11    | `effective_mode()` routing, wallet thresholds, USDC.e-ignored, paper fallback           |
+| `test_edge_calc.py`        | 10    | Tokenization, geometric oracle blending, side-flipping, zero-edge no-oracle invariant   |
+| `test_scheduler.py`        | 8     | Job registration, scan immediacy, one-shot "all oracles down" + recovery alerts         |
+| `test_executor.py`         | 6     | Paper fill → position → mark-to-market → close → realized PnL                           |
+| `test_api_serialization.py`| 6     | `inf`/`NaN` coercion, stage serialization, `/config` `/state` `/stats` endpoint smoke   |
 
-Each test gets a fresh SQLModel schema via the `fresh_db` fixture.
+Each test gets a fresh SQLModel schema via the `fresh_db` fixture, and `get_settings()` is cache-cleared between tests by an autouse fixture in `conftest.py`.
 
 > 🎯 **War story**: The first version of `kelly.py` shipped with the wrong closed-form simplification (`f = m/p − 1`, which is exactly **50% too aggressive** at typical Polymarket prices). The textbook-equivalence test in `test_kelly_matches_textbook_formula` caught it before any capital touched a CLOB. The correct form is `(m − p) / (1 − p)`. This is exactly what unit tests are for.
 
@@ -429,24 +434,28 @@ Each test gets a fresh SQLModel schema via the `fresh_db` fixture.
 ## File structure
 
 ```
-polymarket-bot/
+polymarket-trading-bot/
 ├── backend/
 │   ├── __init__.py
-│   ├── main.py              # FastAPI + WebSocket
-│   ├── scanner.py           # Market scanning
-│   ├── edge_calc.py         # Probability model + edge
-│   ├── kelly.py             # Kelly Criterion + stages
-│   ├── executor.py          # Paper + live execution
-│   ├── portfolio.py         # Positions, PnL, risk
-│   ├── db.py                # SQLModel schema
-│   ├── config.py            # Settings + stage table
-│   ├── scheduler.py         # APScheduler jobs
+│   ├── main.py              # FastAPI app: REST routes, WebSocket, lifespan
+│   ├── scanner.py           # Polymarket Gamma API → MarketSnapshot → filter → rank
+│   ├── edge_calc.py         # Metaculus / Kalshi oracles + log-odds blending
+│   ├── kelly.py             # Kelly Criterion + stage-aware sizing gates
+│   ├── executor.py          # Paper + live (py-clob-client-v2) execution
+│   ├── portfolio.py         # Dual bankroll, PnL, drawdown, effective_mode()
+│   ├── wallet.py            # Read-only Polygon pUSD/USDC.e/MATIC balance polling
+│   ├── db.py                # SQLModel schema + KV helpers
+│   ├── config.py            # Pydantic Settings + STAGES table
+│   ├── scheduler.py         # APScheduler jobs + WebSocket broadcaster seam
 │   ├── Dockerfile
 │   └── tests/
 │       ├── conftest.py
 │       ├── test_kelly.py
 │       ├── test_edge_calc.py
-│       └── test_executor.py
+│       ├── test_executor.py
+│       ├── test_auto_mode.py
+│       ├── test_scheduler.py
+│       └── test_api_serialization.py
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx
@@ -463,16 +472,25 @@ polymarket-bot/
 │   │   │   └── ConfigPanel.jsx
 │   │   ├── hooks/useWebSocket.js
 │   │   └── lib/{api.js, format.js}
+│   ├── public/favicon.svg
 │   ├── package.json
+│   ├── eslint.config.js
+│   ├── postcss.config.js
 │   ├── tailwind.config.js
 │   ├── vite.config.js
 │   └── Dockerfile
-├── data/                   # SQLite DB lives here
+├── scripts/
+│   ├── dev.sh                       # one-shot launcher (macOS / Linux / git-bash / WSL)
+│   ├── dev.ps1                      # one-shot launcher (Windows PowerShell)
+│   ├── generate_polymarket_keys.py  # derive Polymarket API creds from your wallet
+│   └── wrap_usdc.py                 # wrap USDC.e → pUSD via Polymarket's CollateralOnramp
+├── data/                            # SQLite DB lives here (gitignored)
 ├── .env.example
 ├── .gitignore
 ├── docker-compose.yml
 ├── pytest.ini
 ├── requirements.txt
+├── CONTEXT.md                       # operating manual for AI agents
 └── README.md
 ```
 
@@ -481,10 +499,12 @@ polymarket-bot/
 ## Contributing / extending
 
 Before you (or your AI agent) start coding, read [`CONTEXT.md`](./CONTEXT.md). It documents:
-- The hard invariants (the Kelly formula, the paper-mode default, the secrets policy)
+- The hard invariants (the Kelly formula, the auto-mode paper-fallback, the no-fabricated-edge rule, the secrets policy)
 - Coding conventions for both Python and React
 - How to add a new probability oracle, a new dashboard panel, or a new runtime setting
 - A list of things the agent is **not** allowed to do without explicit user permission
+
+Issues and pull requests are welcome at [github.com/manishhansal/polymarket-trading-bot](https://github.com/manishhansal/polymarket-trading-bot). Please run `pytest -q` (all 59 green) and `npm run lint` before opening a PR.
 
 Common shortcuts:
 

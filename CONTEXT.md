@@ -2,6 +2,8 @@
 
 > Operating manual for AI agents (Cursor, Claude Code, Codex) working on **polybot**.
 > Read this **before** making changes. Humans should read [`README.md`](./README.md) instead.
+>
+> **Repository:** [github.com/manishhansal/polymarket-trading-bot](https://github.com/manishhansal/polymarket-trading-bot) (branch: `master`)
 
 ---
 
@@ -21,19 +23,21 @@
 
 ```
 Polymarket Gamma API ─► scanner ─► edge_calc ─► kelly ─► executor ─► db
-                                                  │                    │
+                                                  │         ▲          │
+                                                  │     wallet         │
                                                   └────► portfolio ◄───┘
                                                               │
               dashboard (React) ◄── WebSocket ◄── scheduler ──┘
 ```
 
-Three APScheduler jobs run forever in the background:
+Four APScheduler jobs run forever in the background:
 
-| Job              | Cadence | Responsibility                                              |
-|------------------|---------|-------------------------------------------------------------|
-| `scan_and_trade` | 60 s    | scan markets → compute edge → size → route to executor       |
-| `refresh_marks`  | 30 s    | refresh open-position prices, enforce stop-loss              |
-| `write_snapshot` | 60 s    | append a bankroll point + emit WebSocket update             |
+| Job              | Cadence | Responsibility                                                   |
+|------------------|---------|------------------------------------------------------------------|
+| `scan_and_trade` | 60 s    | scan markets → compute edge → size → route to executor            |
+| `refresh_marks`  | 30 s    | refresh open-position prices, enforce stop-loss                   |
+| `write_snapshot` | 60 s    | append a bankroll point + emit WebSocket update                   |
+| `poll_wallet`    | 30 s    | refresh on-chain pUSD/USDC.e/MATIC, fire auto-mode flip alerts    |
 
 The FastAPI app additionally runs a 5-second heartbeat broadcaster for the dashboard.
 
@@ -48,10 +52,10 @@ The FastAPI app additionally runs a 5-second heartbeat broadcaster for the dashb
 | `config.py`       | Pydantic settings, `.env` loading, the **STAGES** compounding table                    | adding a tunable knob or a new stage                 |
 | `db.py`           | SQLModel schema, engine, KV helpers                                                    | adding a column or table                             |
 | `kelly.py`        | Kelly fraction + `size_position` gating                                                | changing how stake size is decided                   |
-| `edge_calc.py`    | Oracle fetchers (Metaculus/Kalshi/PredictIt), `_blend`, `compute_edge`                 | adding a new probability source                      |
+| `edge_calc.py`    | Oracle fetchers (Metaculus + Kalshi), `_blend`, `compute_edge`                         | adding a new probability source                      |
 | `scanner.py`      | Gamma API → `MarketSnapshot` → filter → rank                                           | changing what markets we consider                    |
 | `executor.py`     | Paper + live (`py-clob-client-v2`) order placement, mark-to-market, position close-out | touching order routing or slippage logic             |
-| `wallet.py`       | Read-only USDC + MATIC balance polling on Polygon, cached for 30 s                     | adding new on-chain reads                            |
+| `wallet.py`       | Read-only pUSD + USDC.e + MATIC polling on Polygon, cached for 30 s                    | adding new on-chain reads                            |
 | `portfolio.py`    | Dual bankroll, PnL, drawdown, `effective_mode()`, stage transitions, alerts, stats     | adding a risk gate or KPI                            |
 | `scheduler.py`    | APScheduler job graph + WebSocket broadcaster registration                             | adding/removing a background job                     |
 | `main.py`         | FastAPI app: REST routes, WebSocket endpoint, lifespan, serializers                    | adding an API endpoint                               |
@@ -105,6 +109,10 @@ Both are surfaced in `PortfolioState.paper_bankroll` and `.live_bankroll` and bo
 
 When auto mode crosses the threshold in either direction, `scheduler.poll_wallet` writes a `SettingsKV` flag (`last_effective_mode`) and pushes a `SUCCESS` (going live) or `WARNING` (reverting to paper) alert. Don't bypass that — the user must always know when real money is about to move.
 
+---
+
+## Coding conventions
+
 ### Python
 
 - **3.11+ only.** We use `from __future__ import annotations` everywhere for cheap forward refs.
@@ -139,10 +147,20 @@ Never use raw hex codes outside `tailwind.config.js`.
 
 ## Testing rules
 
-- **Every change to `kelly.py`, `edge_calc.py`, or `executor.py` requires a corresponding test.** Run `pytest -q`; expect green.
+- **Every change to `kelly.py`, `edge_calc.py`, `executor.py`, `portfolio.py`, or `scheduler.py` requires a corresponding test.** Run `pytest -q`; expect **59 green**.
+- Test files and what each owns:
+  | File                        | Tests | Owns                                                                                  |
+  |-----------------------------|-------|---------------------------------------------------------------------------------------|
+  | `test_kelly.py`             | 18    | Kelly formula, drawdown, stage gating, position caps, min-bet floor                    |
+  | `test_auto_mode.py`         | 11    | `effective_mode()` routing, wallet thresholds, USDC.e-ignored, paper fallback          |
+  | `test_edge_calc.py`         | 10    | Tokenization, blending, side-flips, the "no oracle ⇒ zero edge" invariant              |
+  | `test_scheduler.py`         | 8     | Job registration, scan immediacy, one-shot "all oracles down" + recovery alerts        |
+  | `test_executor.py`          | 6     | Paper fill → position → mark-to-market → close → realized PnL                          |
+  | `test_api_serialization.py` | 6     | `_json_safe_number`, stage serialization, `/config` `/state` `/stats` endpoint smoke   |
 - Tests use the `fresh_db` fixture, which drops + recreates all SQLModel tables against the existing engine. **Do not call `importlib.reload` on `backend.db`** — it double-registers tables with SQLAlchemy's `MetaData` and explodes.
+- An autouse `_reset_settings` fixture in `conftest.py` clears `get_settings.cache_clear()` between tests. If you add a new singleton with `@lru_cache`, clear it the same way.
 - Async tests are auto-discovered (`asyncio_mode = auto` in `pytest.ini`). No `@pytest.mark.asyncio` decorator needed on every test, but adding one is harmless.
-- Mock external HTTP via `monkeypatch.setattr(edge_calc, "_fetch_metaculus_match", ...)` etc. Do **not** hit real Metaculus / Kalshi / PredictIt from tests.
+- Mock external HTTP via `monkeypatch.setattr(edge_calc, "_fetch_metaculus_match", ...)` etc. Do **not** hit real Metaculus / Kalshi / Polymarket / Polygon RPC from tests. Mock `wallet.get_wallet_state` the same way for `executor` / `portfolio` tests.
 - There are no frontend tests yet. If you add some, use Vitest + React Testing Library — do not introduce Jest.
 
 ---
@@ -196,6 +214,8 @@ If you're tempted to add stage-specific code branches elsewhere, **don't**. Push
 - Add user authentication. The dashboard is local-only by design.
 - Modify `.env` directly (only `.env.example` is tracked).
 - Commit anything to git unless the user explicitly asks.
+- `git push`, force-push, rewrite history, or open/merge a PR on `master` without explicit user instruction. The remote is [`origin`](https://github.com/manishhansal/polymarket-trading-bot) → assume it is public.
+- Re-introduce heuristic "mean-reversion" edge in `edge_calc.py` (see invariant #3).
 
 ---
 
